@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""
+채팅 데이터 분석기 메인 프로그램
+CSV 파일의 채팅 데이터를 분석하여 사용자 정의 필터에 매칭되는 정도를 계산
+"""
+
+import os
+import sys
+import click
+from chat_analyzer import ChatAnalyzer
+
+
+@click.group()
+def cli():
+    """채팅 데이터 분석기 - CSV 파일의 채팅을 AI로 분석합니다."""
+    pass
+
+
+@cli.command()
+@click.argument('csv_file', type=click.Path(exists=True))
+@click.argument('filter_criteria', type=str)
+@click.option('--window-size', '-w', default=100, help='채팅 윈도우 크기 (기본값: 100)')
+@click.option('--overlap', '-o', default=50, help='윈도우 겹침 크기 (기본값: 50)')
+@click.option('--model', '-m', default='claude-3-haiku-20240307', help='사용할 Claude 모델')
+@click.option('--output', '-out', help='결과 저장 파일명')
+def analyze(csv_file, filter_criteria, window_size, overlap, model, output):
+    """CSV 파일을 분석하여 필터 매칭률을 계산합니다."""
+    
+    # API 키 확인
+    if not os.getenv('ANTHROPIC_API_KEY'):
+        click.echo("❌ ANTHROPIC_API_KEY 환경 변수가 설정되지 않았습니다.")
+        click.echo("💡 .env 파일에 API 키를 설정하거나 환경 변수로 설정해주세요.")
+        sys.exit(1)
+    
+    try:
+        # 분석기 초기화
+        analyzer = ChatAnalyzer(model=model)
+        
+        # 분석 실행
+        results = analyzer.analyze_csv_file(
+            csv_path=csv_file,
+            filter_criteria=filter_criteria,
+            window_size=window_size,
+            overlap=overlap
+        )
+        
+        if not results:
+            click.echo("❌ 분석 결과가 없습니다.")
+            sys.exit(1)
+        
+        # 결과 저장
+        saved_file = analyzer.save_results(output)
+        if saved_file:
+            click.echo(f"\n💾 분석 결과가 저장되었습니다: {saved_file}")
+            click.echo(f"🔍 임계값 검색을 하려면: python main.py search {saved_file} <임계값>")
+        
+    except Exception as e:
+        click.echo(f"❌ 분석 중 오류 발생: {e}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('result_file', type=click.Path(exists=True))
+@click.argument('threshold', type=float)
+def search(result_file, threshold):
+    """저장된 분석 결과에서 임계값 이상의 블록들을 검색합니다."""
+    
+    try:
+        # 분석기 초기화 및 결과 로드
+        analyzer = ChatAnalyzer()
+        results = analyzer.load_results(result_file)
+        
+        if not results:
+            click.echo("❌ 분석 결과를 로드할 수 없습니다.")
+            sys.exit(1)
+        
+        # 임계값 이상 블록 검색
+        filtered_blocks = analyzer.get_blocks_above_threshold(threshold)
+        
+        if not filtered_blocks:
+            click.echo(f"🔍 매칭률 {threshold}% 이상인 블록이 없습니다.")
+        else:
+            click.echo(f"\n✅ 총 {len(filtered_blocks)}개의 블록이 {threshold}% 이상의 매칭률을 보입니다.")
+        
+    except Exception as e:
+        click.echo(f"❌ 검색 중 오류 발생: {e}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('result_file', type=click.Path(exists=True))
+def stats(result_file):
+    """저장된 분석 결과의 통계를 출력합니다."""
+    
+    try:
+        # 분석기 초기화 및 결과 로드
+        analyzer = ChatAnalyzer()
+        results = analyzer.load_results(result_file)
+        
+        if not results:
+            click.echo("❌ 분석 결과를 로드할 수 없습니다.")
+            sys.exit(1)
+        
+        # 통계 출력 (이미 ChatAnalyzer에서 처리됨)
+        from data_manager import DataManager
+        data_manager = DataManager()
+        stats_info = data_manager.get_statistics(results)
+        
+        click.echo(f"\n📊 분석 결과 통계")
+        click.echo("=" * 50)
+        click.echo(f"전체 블록 수: {stats_info['total_blocks']}개")
+        click.echo(f"평균 매칭률: {stats_info['average_match_rate']:.1f}%")
+        click.echo(f"최고 매칭률: {stats_info['max_match_rate']:.1f}%")
+        click.echo(f"최저 매칭률: {stats_info['min_match_rate']:.1f}%")
+        click.echo(f"50% 이상 블록: {stats_info['blocks_above_50']}개")
+        click.echo(f"75% 이상 블록: {stats_info['blocks_above_75']}개")
+        click.echo("=" * 50)
+        
+    except Exception as e:
+        click.echo(f"❌ 통계 출력 중 오류 발생: {e}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('result_file', type=click.Path(exists=True))
+@click.argument('block_id', type=int)
+def detail(result_file, block_id):
+    """특정 블록의 상세 정보를 출력합니다."""
+    
+    try:
+        # 분석기 초기화 및 결과 로드
+        analyzer = ChatAnalyzer()
+        results = analyzer.load_results(result_file)
+        
+        if not results:
+            click.echo("❌ 분석 결과를 로드할 수 없습니다.")
+            sys.exit(1)
+        
+        # 블록 상세 정보 출력
+        block_info = analyzer.get_detailed_block_info(block_id)
+        
+        if not block_info:
+            click.echo(f"❌ 블록 #{block_id}를 찾을 수 없습니다.")
+            sys.exit(1)
+        
+        click.echo(f"\n🔍 블록 #{block_info['block_id']} 상세 정보")
+        click.echo("=" * 50)
+        click.echo(f"매칭률: {block_info['match_rate']:.1f}%")
+        click.echo(f"필터 조건: {block_info['filter_criteria']}")
+        click.echo(f"메시지 수: {block_info['message_count']}개")
+        click.echo(f"인덱스 범위: {block_info['start_index']} ~ {block_info['end_index']}")
+        click.echo(f"\n첫 번째 메시지:")
+        click.echo(f"  📅 {block_info['first_message']['date']}")
+        click.echo(f"  👤 {block_info['first_message']['user']}")
+        click.echo(f"  💬 {block_info['first_message']['message']}")
+        click.echo(f"\n마지막 메시지:")
+        click.echo(f"  📅 {block_info['last_message']['date']}")
+        click.echo(f"  👤 {block_info['last_message']['user']}")
+        click.echo(f"  💬 {block_info['last_message']['message']}")
+        click.echo("=" * 50)
+        
+    except Exception as e:
+        click.echo(f"❌ 상세 정보 출력 중 오류 발생: {e}")
+        sys.exit(1)
+
+
+@cli.command()
+def setup():
+    """환경 설정 가이드를 출력합니다."""
+    
+    click.echo("🚀 채팅 데이터 분석기 환경 설정 가이드")
+    click.echo("=" * 50)
+    click.echo("1. 가상환경 설정:")
+    click.echo("   ./setup.sh")
+    click.echo("")
+    click.echo("2. 가상환경 활성화:")
+    click.echo("   source activate.sh")
+    click.echo("")
+    click.echo("3. API 키 설정:")
+    click.echo("   .env 파일에 ANTHROPIC_API_KEY=your_key_here 추가")
+    click.echo("")
+    click.echo("4. CSV 파일 준비:")
+    click.echo("   Date,User,Message 형식의 CSV 파일")
+    click.echo("")
+    click.echo("5. 분석 실행:")
+    click.echo("   python main.py analyze chat.csv '긍정적인 대화'")
+    click.echo("")
+    click.echo("6. 결과 검색:")
+    click.echo("   python main.py search analysis_results_xxx.json 75")
+    click.echo("=" * 50)
+
+
+if __name__ == '__main__':
+    cli()
