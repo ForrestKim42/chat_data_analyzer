@@ -165,6 +165,70 @@ def detail(result_file, block_id):
 
 
 @cli.command()
+@click.argument('csv_file', type=click.Path(exists=True))
+@click.argument('filter_criteria', type=str)
+@click.option('--window-size', '-w', default=100, help='채팅 윈도우 크기 (기본값: 100)')
+@click.option('--overlap', '-o', default=50, help='윈도우 겹침 크기 (기본값: 50)')
+@click.option('--model', '-m', default='claude-3-haiku-20240307', help='사용할 Claude 모델')
+def estimate(csv_file, filter_criteria, window_size, overlap, model):
+    """분석 전 예상 비용을 계산합니다."""
+    
+    try:
+        # 분석기 초기화
+        analyzer = ChatAnalyzer(model=model)
+        
+        # CSV 로드 및 블록 생성
+        chat_data = analyzer.data_manager.load_csv(csv_file)
+        if not chat_data:
+            click.echo("❌ CSV 파일 로드 실패")
+            sys.exit(1)
+            
+        chat_blocks = analyzer.data_manager.create_sliding_windows(window_size, overlap)
+        if not chat_blocks:
+            click.echo("❌ 채팅 블록 생성 실패")
+            sys.exit(1)
+        
+        # 비용 추정
+        estimated_cost = analyzer._estimate_cost(chat_blocks, filter_criteria)
+        
+        click.echo(f"\n💰 분석 비용 추정")
+        click.echo("=" * 40)
+        click.echo(f"모델: {estimated_cost['model']}")
+        click.echo(f"총 블록 수: {estimated_cost['total_blocks']:,}개")
+        click.echo(f"예상 토큰: {estimated_cost['estimated_tokens']:,}개")
+        click.echo(f"  - 입력 토큰: {estimated_cost['estimated_input_tokens']:,}개")
+        click.echo(f"  - 출력 토큰: {estimated_cost['estimated_output_tokens']:,}개")
+        click.echo(f"예상 비용: ${estimated_cost['total_usd']:.4f}")
+        click.echo(f"예상 비용(원): ₩{estimated_cost['total_krw']:.0f}")
+        click.echo("=" * 40)
+        click.echo("💡 실제 비용은 텍스트 복잡도에 따라 달라질 수 있습니다.")
+        
+    except Exception as e:
+        click.echo(f"❌ 비용 추정 중 오류 발생: {e}")
+        sys.exit(1)
+
+
+@cli.command()
+def pricing():
+    """모델별 가격 정보를 출력합니다."""
+    
+    from llm_client import ClaudeClient
+    
+    click.echo("💰 Claude 모델별 가격 정보 (1K 토큰당)")
+    click.echo("=" * 60)
+    
+    for model, pricing in ClaudeClient.MODEL_PRICING.items():
+        click.echo(f"\n🤖 {model}")
+        click.echo(f"  입력: ${pricing['input']:.5f} (₩{pricing['input'] * 1350:.2f})")
+        click.echo(f"  출력: ${pricing['output']:.5f} (₩{pricing['output'] * 1350:.2f})")
+    
+    click.echo("\n💡 환율: 1 USD = 1,350 KRW (대략)")
+    click.echo("💡 추천 모델:")
+    click.echo("  - 비용 최적화: claude-3-haiku-20240307")
+    click.echo("  - 성능 균형: claude-3-5-sonnet-20240620")
+
+
+@cli.command()
 def setup():
     """환경 설정 가이드를 출력합니다."""
     
@@ -182,10 +246,13 @@ def setup():
     click.echo("4. CSV 파일 준비:")
     click.echo("   Date,User,Message 형식의 CSV 파일")
     click.echo("")
-    click.echo("5. 분석 실행:")
+    click.echo("5. 비용 추정:")
+    click.echo("   python main.py estimate chat.csv '긍정적인 대화'")
+    click.echo("")
+    click.echo("6. 분석 실행:")
     click.echo("   python main.py analyze chat.csv '긍정적인 대화'")
     click.echo("")
-    click.echo("6. 결과 검색:")
+    click.echo("7. 결과 검색:")
     click.echo("   python main.py search analysis_results_xxx.json 75")
     click.echo("=" * 50)
 

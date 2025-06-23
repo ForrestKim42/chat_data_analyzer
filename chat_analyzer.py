@@ -55,15 +55,25 @@ class ChatAnalyzer:
             print("❌ 채팅 블록 생성 실패")
             return []
         
-        # 3. 각 블록별 매칭률 계산
+        # 3. 비용 예상치 출력
+        estimated_cost = self._estimate_cost(chat_blocks, filter_criteria)
+        print(f"💰 예상 비용: ${estimated_cost['total_usd']:.4f} (₩{estimated_cost['total_krw']:.0f})")
+        print(f"📊 예상 토큰: {estimated_cost['estimated_tokens']:,}개")
+        
+        proceed = input("계속 진행하시겠습니까? (y/N): ").lower().strip()
+        if proceed != 'y':
+            print("분석이 취소되었습니다.")
+            return []
+        
+        # 4. 각 블록별 매칭률 계산
         print(f"🤖 Claude를 이용한 매칭률 계산 시작...")
         results = []
         
         with tqdm(total=len(chat_blocks), desc="분석 진행") as pbar:
             for i, block in enumerate(chat_blocks):
                 try:
-                    # Claude로 매칭률 계산
-                    match_rate = self.claude_client.calculate_filter_match_rate(block, filter_criteria)
+                    # Claude로 매칭률 계산 (비용 정보 포함)
+                    match_rate, cost_info = self.claude_client.calculate_filter_match_rate(block, filter_criteria)
                     
                     # 결과 저장
                     result = {
@@ -73,6 +83,7 @@ class ChatAnalyzer:
                         "message_count": len(block),
                         "match_rate": match_rate,
                         "filter_criteria": filter_criteria,
+                        "cost_info": cost_info,
                         "first_message": {
                             "date": block[0]['date'],
                             "user": block[0]['user'],
@@ -86,8 +97,19 @@ class ChatAnalyzer:
                     }
                     results.append(result)
                     
-                    pbar.set_postfix({"현재 매칭률": f"{match_rate:.1f}%"})
+                    # 진행상황 업데이트 (매칭률과 누적 비용 표시)
+                    current_cost = self.claude_client.total_cost
+                    pbar.set_postfix({
+                        "매칭률": f"{match_rate:.1f}%", 
+                        "누적비용": f"${current_cost:.4f}"
+                    })
                     pbar.update(1)
+                    
+                    # 주기적으로 비용 정보 출력
+                    if (i + 1) % 20 == 0:
+                        usage = self.claude_client.get_usage_summary()
+                        print(f"\n💰 진행상황: {i+1}/{len(chat_blocks)} 완료, "
+                              f"비용: ${usage['total_cost_usd']:.4f} (₩{usage['total_cost_krw']:.0f})")
                     
                 except Exception as e:
                     print(f"블록 {i+1} 분석 중 오류: {e}")
@@ -96,8 +118,9 @@ class ChatAnalyzer:
         
         self.analysis_results = results
         
-        # 4. 통계 출력
+        # 5. 최종 통계 및 비용 출력
         self._print_analysis_summary(results)
+        self.claude_client.print_usage_summary()
         
         return results
     
@@ -165,3 +188,41 @@ class ChatAnalyzer:
         
         print(f"❌ 블록 #{block_id}를 찾을 수 없습니다.")
         return {}
+    
+    def _estimate_cost(self, chat_blocks: List[List[Dict[str, str]]], filter_criteria: str) -> Dict[str, Any]:
+        """비용 추정"""
+        # 샘플 블록으로 평균 토큰 수 계산
+        sample_block = chat_blocks[0] if chat_blocks else []
+        sample_text = self.claude_client._format_chat_messages(sample_block)
+        sample_prompt = self.claude_client._create_analysis_prompt(sample_text, filter_criteria)
+        
+        # 대략적인 토큰 수 계산 (영어 기준 4글자 = 1토큰, 한국어는 더 많이 소모)
+        estimated_input_tokens_per_block = len(sample_prompt) // 3  # 한국어 고려하여 보수적으로 계산
+        estimated_output_tokens_per_block = 50  # max_tokens 설정값
+        
+        total_blocks = len(chat_blocks)
+        total_input_tokens = estimated_input_tokens_per_block * total_blocks
+        total_output_tokens = estimated_output_tokens_per_block * total_blocks
+        
+        # 비용 계산
+        if self.claude_client.model in self.claude_client.MODEL_PRICING:
+            pricing = self.claude_client.MODEL_PRICING[self.claude_client.model]
+            input_cost = (total_input_tokens / 1000) * pricing["input"]
+            output_cost = (total_output_tokens / 1000) * pricing["output"]
+            total_cost_usd = input_cost + output_cost
+        else:
+            total_cost_usd = 0.0
+        
+        return {
+            "total_blocks": total_blocks,
+            "estimated_tokens": total_input_tokens + total_output_tokens,
+            "estimated_input_tokens": total_input_tokens,
+            "estimated_output_tokens": total_output_tokens,
+            "total_usd": total_cost_usd,
+            "total_krw": total_cost_usd * 1350,
+            "model": self.claude_client.model
+        }
+    
+    def get_cost_summary(self) -> Dict[str, Any]:
+        """현재 세션의 비용 요약 반환"""
+        return self.claude_client.get_usage_summary()
