@@ -5,8 +5,8 @@ Date,User,Message 형식의 CSV 파일을 처리
 
 import pandas as pd
 import json
-from typing import List, Dict, Any
-from datetime import datetime
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
 
 
 class DataManager:
@@ -15,12 +15,13 @@ class DataManager:
     def __init__(self):
         self.chat_data = []
     
-    def load_csv(self, file_path: str) -> List[Dict[str, str]]:
+    def load_csv(self, file_path: str, recent_days: Optional[int] = None) -> List[Dict[str, str]]:
         """
         CSV 파일을 읽어서 채팅 데이터로 변환
         
         Args:
             file_path: CSV 파일 경로
+            recent_days: 최근 N일 이내 데이터만 로드 (None이면 전체)
         
         Returns:
             채팅 데이터 리스트 [{"date": "...", "user": "...", "message": "..."}]
@@ -39,6 +40,10 @@ class DataManager:
             df['Message'] = df['Message'].astype(str).str.strip()  # 메시지 공백 제거
             df = df[df['Message'] != '']  # 빈 메시지 제거
             
+            # 날짜 필터링 (recent_days가 지정된 경우)
+            if recent_days is not None:
+                df = self._filter_by_recent_days(df, recent_days)
+            
             # 딕셔너리 리스트로 변환
             chat_data = []
             for _, row in df.iterrows():
@@ -49,7 +54,8 @@ class DataManager:
                 })
             
             self.chat_data = chat_data
-            print(f"✅ CSV 파일 로드 완료: {len(chat_data)}개의 메시지")
+            filter_msg = f" (최근 {recent_days}일)" if recent_days else ""
+            print(f"✅ CSV 파일 로드 완료{filter_msg}: {len(chat_data)}개의 메시지")
             return chat_data
             
         except Exception as e:
@@ -189,3 +195,74 @@ class DataManager:
         }
         
         return stats
+    
+    def _filter_by_recent_days(self, df: pd.DataFrame, recent_days: int) -> pd.DataFrame:
+        """
+        최근 N일 이내의 데이터만 필터링
+        
+        Args:
+            df: 원본 DataFrame
+            recent_days: 최근 N일
+        
+        Returns:
+            필터링된 DataFrame
+        """
+        try:
+            # 현재 날짜에서 N일 전 계산
+            cutoff_date = datetime.now() - timedelta(days=recent_days)
+            
+            # Date 컬럼을 datetime으로 변환 (다양한 형식 시도)
+            date_formats = [
+                '%Y-%m-%d %H:%M:%S',  # 2024-06-23 14:30:22
+                '%Y-%m-%d',           # 2024-06-23
+                '%Y/%m/%d %H:%M:%S',  # 2024/06/23 14:30:22
+                '%Y/%m/%d',           # 2024/06/23
+                '%m/%d/%Y %H:%M:%S',  # 06/23/2024 14:30:22
+                '%m/%d/%Y',           # 06/23/2024
+                '%d/%m/%Y %H:%M:%S',  # 23/06/2024 14:30:22
+                '%d/%m/%Y'            # 23/06/2024
+            ]
+            
+            df_filtered = df.copy()
+            parsed_dates = None
+            
+            for date_format in date_formats:
+                try:
+                    parsed_dates = pd.to_datetime(df_filtered['Date'], format=date_format, errors='coerce')
+                    if not parsed_dates.isna().all():  # 일부라도 파싱되면 성공
+                        break
+                except:
+                    continue
+            
+            # 파싱이 실패한 경우 기본 파싱 시도
+            if parsed_dates is None or parsed_dates.isna().all():
+                parsed_dates = pd.to_datetime(df_filtered['Date'], errors='coerce')
+            
+            # 파싱 실패한 행들 제거
+            valid_dates_mask = ~parsed_dates.isna()
+            if not valid_dates_mask.any():
+                print(f"⚠️ 날짜 파싱 실패 - 전체 데이터를 사용합니다")
+                return df
+            
+            df_filtered = df_filtered[valid_dates_mask]
+            parsed_dates = parsed_dates[valid_dates_mask]
+            
+            # 최근 N일 이내 데이터 필터링
+            recent_mask = parsed_dates >= cutoff_date
+            df_recent = df_filtered[recent_mask]
+            
+            original_count = len(df)
+            filtered_count = len(df_recent)
+            
+            print(f"📅 날짜 필터링: {original_count}개 → {filtered_count}개 메시지 (최근 {recent_days}일)")
+            
+            if filtered_count == 0:
+                print(f"⚠️ 최근 {recent_days}일 이내 데이터가 없습니다. 전체 데이터를 사용합니다.")
+                return df
+            
+            return df_recent
+            
+        except Exception as e:
+            print(f"⚠️ 날짜 필터링 중 오류 발생: {e}")
+            print("전체 데이터를 사용합니다.")
+            return df
